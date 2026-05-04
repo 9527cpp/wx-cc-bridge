@@ -143,4 +143,5 @@ async def handle(
     if cmd == "/help":
         return HELP
 
-    return f"未知命令 {cmd}。/help 查看所有命令"
+    # Unknown /command — let claude -p handle it
+    return None
