@@ -1,0 +1,18 @@
+[Unit]
+Description=wx-cc-bridge bridge service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={{REPO}}
+ExecStart={{PYTHON}} -m wx_cc_bridge.bridge
+Environment=PYTHONPATH={{REPO}}/src
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+StandardOutput=append:{{LOG_DIR}}/bridge.log
+StandardError=append:{{LOG_DIR}}/bridge.err.log
+
+[Install]
+WantedBy=multi-user.target

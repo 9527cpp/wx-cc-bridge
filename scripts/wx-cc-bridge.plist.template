@@ -7,7 +7,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>{{REPO}}/.venv/bin/python</string>
+    <string>python3</string>
     <string>-m</string>
     <string>wx_cc_bridge.bridge</string>
   </array>

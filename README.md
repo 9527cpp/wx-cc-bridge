@@ -47,7 +47,9 @@ A QR code prints in the terminal. Scan it with the WeChat account you want to us
 
 Send any message from a second WeChat account to the bot account and you should see `[msg] …` in the log and a Claude reply back in WeChat.
 
-## Run as a background service (macOS launchd)
+## Run as a background service
+
+### macOS (launchd)
 
 ```bash
 make install-service         # one-time
@@ -58,6 +60,29 @@ make uninstall-service
 ```
 
 Logs: `~/Library/Logs/wx-cc-bridge/`. Auto-restarts on crash; survives logout/login; **does not** survive Mac sleep/shutdown.
+
+### Linux (systemd)
+
+```bash
+# 一行命令完成安装（需要 sudo）
+sudo make install-service
+
+# 后续管理不需要 sudo（polkit 已授权当前用户）
+make status
+make logs
+make restart-service
+make uninstall-service
+```
+
+安装时 Makefile 会自动：
+1. 创建 `~/.local/log/wx-cc-bridge/` 日志目录
+2. 生成 `/etc/systemd/system/wx-cc-bridge.service`
+3. 设置 `User=rock5b`（与服务配置目录一致）
+4. 启用并启动服务
+
+Logs: `~/.local/log/wx-cc-bridge/bridge.log` + `bridge.err.log`.
+
+> **常见问题**：`ModuleNotFoundError: No module named 'httpx'` — systemd 默认以 root 运行，但 pip 安装的包在用户目录。需要 `sudo pip3 install httpx qrcode` 安装到系统路径，或者 service 文件中指定 `User=yourname` 以你的用户身份运行。
 
 ## Commands (in WeChat)
 
@@ -83,7 +108,8 @@ src/wx_cc_bridge/
   bridge.py           # main loop: poll → dispatch → reply
   echo.py             # M1-era echo bot, handy for iLink protocol debugging
 scripts/
-  wx-cc-bridge.plist.template  # launchd service template
+  wx-cc-bridge.plist.template  # launchd service template (macOS)
+  wx-cc-bridge.service.template # systemd service template (Linux)
 ```
 
 Runtime state:
