@@ -40,7 +40,10 @@ class FeishuConfig:
         }, ensure_ascii=False))
 
 
-# FeishuChannel placeholder — 后续 Task 实现完整逻辑
+from typing import AsyncIterator
+import asyncio
+
+
 class FeishuChannel:
     name = "feishu"
 
@@ -55,3 +58,22 @@ class FeishuChannel:
             self.config = FeishuConfig.load(self._config_path)
         else:
             raise RuntimeError(f"飞书配置不存在: {self._config_path}")
+
+        self._ws_client = None
+        self._msg_queue: asyncio.Queue | None = None
+        self._abort_event: asyncio.Event | None = None
+
+    async def login(self) -> None:
+        print(f"[feishu] 配置加载 app_id={self.config.app_id}")
+        print(f"[feishu] domain={self.config.domain}")
+
+    async def recv_messages(self) -> AsyncIterator:
+        # 空实现，仅供 bridge 编译通过，后续 Step 实现完整逻辑
+        if False:
+            yield
+
+    async def send_text(self, to_user_id: str, context_token: str | None, text: str) -> None:
+        raise NotImplementedError("TODO")
+
+    async def close(self) -> None:
+        print("[feishu] 已关闭")
