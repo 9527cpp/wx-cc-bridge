@@ -10,7 +10,7 @@ DEFAULT_DOMAIN_FEISHU = "feishu"
 DEFAULT_DOMAIN_LARK = "lark"
 
 
-@dataclass
+@dataclass(frozen=True)
 class FeishuConfig:
     app_id: str
     app_secret: str
@@ -19,9 +19,15 @@ class FeishuConfig:
     @classmethod
     def load(cls, config_path: Path) -> "FeishuConfig":
         data = json.loads(config_path.read_text())
+        app_id = data.get("app_id")
+        app_secret = data.get("app_secret")
+        if not app_id:
+            raise ValueError(f"feishu_config.json missing required field 'app_id' at {config_path}")
+        if not app_secret:
+            raise ValueError(f"feishu_config.json missing required field 'app_secret' at {config_path}")
         return cls(
-            app_id=data["app_id"],
-            app_secret=data["app_secret"],
+            app_id=app_id,
+            app_secret=app_secret,
             domain=data.get("domain", DEFAULT_DOMAIN_FEISHU),
         )
 
