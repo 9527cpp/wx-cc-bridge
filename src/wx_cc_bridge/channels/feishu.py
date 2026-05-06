@@ -1,9 +1,13 @@
 """飞书 Bot 长连接 Channel。"""
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, AsyncIterator
+
+from .base import AbstractChannel, Message
 
 
 DEFAULT_DOMAIN_FEISHU = "feishu"
@@ -40,11 +44,7 @@ class FeishuConfig:
         }, ensure_ascii=False))
 
 
-from typing import AsyncIterator
-import asyncio
-
-
-class FeishuChannel:
+class FeishuChannel(AbstractChannel):
     name = "feishu"
 
     def __init__(self, config: FeishuConfig | None = None, config_path: Path | None = None):
@@ -59,7 +59,7 @@ class FeishuChannel:
         else:
             raise RuntimeError(f"飞书配置不存在: {self._config_path}")
 
-        self._ws_client = None
+        self._ws_client: Any | None = None
         self._msg_queue: asyncio.Queue | None = None
         self._abort_event: asyncio.Event | None = None
 
@@ -67,7 +67,7 @@ class FeishuChannel:
         print(f"[feishu] 配置加载 app_id={self.config.app_id}")
         print(f"[feishu] domain={self.config.domain}")
 
-    async def recv_messages(self) -> AsyncIterator:
+    async def recv_messages(self) -> AsyncIterator[Message]:
         # 空实现，仅供 bridge 编译通过，后续 Step 实现完整逻辑
         if False:
             yield
