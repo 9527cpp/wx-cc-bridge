@@ -12,6 +12,7 @@ dependencies = [
 [project.scripts]
 wx-echo = "wx_cc_bridge.echo:run"
 wx-bridge = "wx_cc_bridge.bridge:run"
+wx-wecom-setup = "wx_cc_bridge.wecom_onboard:main"
 
 [build-system]
 requires = ["hatchling"]

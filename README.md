@@ -47,6 +47,29 @@ A QR code prints in the terminal. Scan it with the WeChat account you want to us
 
 Send any message from a second WeChat account to the bot account and you should see `[msg] …` in the log and a Claude reply back in WeChat.
 
+## WeCom扫码引导（原生实现）
+
+如果你希望用和 OpenClaw 文档 `2.2.2` 类似的方式（终端扫码）来完成企业微信接入，可使用：
+
+```bash
+wx-wecom-setup
+```
+
+该命令会：
+1. 调用企业微信扫码接口获取二维码（终端直接渲染）
+2. 轮询扫码结果并拿到 `botId/secret`
+3. 写入 `~/.wx-cc-bridge/wecom_config.json`
+
+常用参数：
+
+```bash
+# 调整扫码超时时间（秒）
+wx-wecom-setup --timeout 600
+
+# 调整轮询间隔（秒）
+wx-wecom-setup --poll-interval 2
+```
+
 ## Run as a background service
 
 ### macOS (launchd)
