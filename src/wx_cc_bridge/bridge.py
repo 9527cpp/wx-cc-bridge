@@ -2,25 +2,25 @@
 
 收到消息 → /命令走 commands.handle → 否则 subprocess claude -p，带 session_id。
 每个 chat_id 串行化；不同 chat 并发。
+
+支持多 channel：iLink（个人微信）、WeCom Bot（企业微信）。
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
 from pathlib import Path
 
 from . import claude_runner, commands
-from .ilink.client import ILinkClient, extract_meta, extract_text, login
+from .channels import AbstractChannel, ILinkChannel, WeComChannel
+from .channels.wecom import WeComConfig
 from .session_store import SessionStore
 
 TYPING_HEARTBEAT_SEC = 3.0
-SOFT_NOTICE_SEC = 90.0  # 超过此时长仍未返回，停 typing 并发一条"还在思考"提示
+SOFT_NOTICE_SEC = 90.0
 
 STATE_DIR = Path(os.environ.get("WX_CC_STATE", Path.home() / ".wx-cc-bridge"))
-TOKEN_PATH = STATE_DIR / "token.json"
-CURSOR_PATH = STATE_DIR / "cursor.txt"
 SESSIONS_PATH = STATE_DIR / "sessions.json"
 DEFAULT_WS_ROOT = Path(
     os.environ.get("WX_CC_WS_ROOT", Path.home() / "cc-wx-sessions")
@@ -32,38 +32,50 @@ def default_cwd_for(chat_id: str) -> str:
     return str(DEFAULT_WS_ROOT / safe)
 
 
-def _load_cursor() -> str:
-    return CURSOR_PATH.read_text().strip() if CURSOR_PATH.exists() else ""
+def _build_channels() -> list[AbstractChannel]:
+    """根据配置构建所有启用的 channel。"""
+    channels: list[AbstractChannel] = []
 
+    # iLink channel：检测 token.json 是否存在
+    if os.environ.get("WX_CC_ENABLE_ILINK", "1") != "0":
+        token_path = STATE_DIR / "token.json"
+        if token_path.exists():
+            channels.append(ILinkChannel(token_path=token_path))
+        else:
+            print(f"[bridge] iLink token not found ({token_path}), skipping iLink channel")
 
-def _save_cursor(c: str) -> None:
-    CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CURSOR_PATH.write_text(c)
+    # WeCom Bot channel：检测 wecom_config.json 是否存在
+    if os.environ.get("WX_CC_ENABLE_WECOM", "1") != "0":
+        wecom_config_path = STATE_DIR / "wecom_config.json"
+        if wecom_config_path.exists():
+            channels.append(WeComChannel(config_path=wecom_config_path))
+        else:
+            print(f"[bridge] WeCom config not found ({wecom_config_path}), skipping WeCom channel")
+        # 也支持直接传入配置（方便测试）
+        wecom_bot_id = os.environ.get("WX_CC_WECOM_BOT_ID", "")
+        wecom_secret = os.environ.get("WX_CC_WECOM_SECRET", "")
+        if wecom_bot_id and wecom_secret and channels and not isinstance(channels[-1], WeComChannel):
+            channels.append(WeComChannel(config=WeComConfig(bot_id=wecom_bot_id, secret=wecom_secret)))
+
+    return channels
 
 
 @contextlib.asynccontextmanager
 async def typing_indicator(
-    client: ILinkClient,
+    channel: AbstractChannel,
     chat_id: str,
-    ctx_token: str,
     max_duration: float | None = None,
 ):
     """Show "正在输入" in WeChat while the body executes.
 
     Best-effort: any typing API failure is logged and ignored so it can't
-    block the real reply flow. Server auto-cancels typing after 60s; we
-    re-send every 3s to keep the indicator alive, matching the official SDK.
-
-    If ``max_duration`` is set, heartbeat自动停（用户会看到 typing 消失），
-    但不影响正在执行的 body。
+    block the real reply flow.
     """
     try:
-        ticket = await client.get_typing_ticket(chat_id, ctx_token)
+        await channel.send_typing(chat_id, status=1)
     except Exception as e:
-        print(f"[typing] get_config error: {e!r}")
-        ticket = None
-
-    if not ticket:
+        print(f"[typing] error: {e!r}")
+        # 如果 channel 不支持 typing，继续执行
         yield
         return
 
@@ -76,7 +88,7 @@ async def typing_indicator(
                 print(f"[typing] soft cutoff hit ({max_duration}s), stop heartbeat")
                 return
             try:
-                await client.send_typing(chat_id, ticket, status=1)
+                await channel.send_typing(chat_id, status=1)
             except Exception as e:
                 print(f"[typing] keepalive error: {e!r}")
             try:
@@ -94,25 +106,29 @@ async def typing_indicator(
         with contextlib.suppress(Exception):
             await task
         try:
-            await client.send_typing(chat_id, ticket, status=2)
+            await channel.send_typing(chat_id, status=2)
         except Exception as e:
             print(f"[typing] cancel error: {e!r}")
 
 
 async def handle_message(
-    chat_id: str,
-    ctx_token: str,
-    text: str,
-    client: ILinkClient,
+    msg,  # Message from channels.base
+    channel: AbstractChannel,
     store: SessionStore,
     locks: dict[str, asyncio.Lock],
 ) -> None:
+    """处理一条消息，分发到 commands 或 claude_runner。"""
+    chat_id = msg.from_user_id
+    ctx_token = msg.context_token
+    text = msg.content
+    channel_name = channel.name
+
     cmd_reply = await commands.handle(text, chat_id, store, default_cwd_for)
     if cmd_reply is not None:
         try:
-            await client.send_text(chat_id, ctx_token, cmd_reply)
+            await channel.send_text(chat_id, ctx_token, cmd_reply)
         except Exception as e:
-            print(f"[send cmd-reply] error: {e!r}")
+            print(f"[{channel_name}] [send cmd-reply] error: {e!r}")
         return
 
     lock = locks.setdefault(chat_id, asyncio.Lock())
@@ -121,92 +137,92 @@ async def handle_message(
         cwd = Path(state.get("cwd") or default_cwd_for(chat_id))
         session_id = state.get("session_id")
 
-        print(f"[claude→] {chat_id} cwd={cwd} sid={session_id}")
+        print(f"[{channel_name}] [claude→] {chat_id} cwd={cwd} sid={session_id}")
         t0 = asyncio.get_event_loop().time()
 
         async def _soft_notice() -> None:
             try:
                 await asyncio.sleep(SOFT_NOTICE_SEC)
-                await client.send_text(
-                    chat_id, ctx_token, "(还在思考中，请稍等…)"
-                )
+                await channel.send_text(chat_id, ctx_token, "(还在思考中，请稍等…)")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print(f"[soft-notice] error: {e!r}")
+                print(f"[{channel_name}] [soft-notice] error: {e!r}")
 
         notice_task = asyncio.create_task(_soft_notice())
         try:
-            async with typing_indicator(
-                client, chat_id, ctx_token, max_duration=SOFT_NOTICE_SEC
-            ):
-                result = await claude_runner.ask(
-                    text, cwd=cwd, session_id=session_id
-                )
+            async with typing_indicator(channel, chat_id, max_duration=SOFT_NOTICE_SEC):
+                result = await claude_runner.ask(text, cwd=cwd, session_id=session_id)
         finally:
             notice_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await notice_task
         dt = asyncio.get_event_loop().time() - t0
         print(
-            f"[claude←] {dt:.1f}s "
+            f"[{channel_name}] [claude←] {dt:.1f}s "
             f"sid={result.session_id} err={bool(result.error)} "
             f"text_len={len(result.text)}"
         )
 
         if result.error:
             reply = f"[Claude 出错] {result.error[:800]}"
-            print(f"[claude ERR] {result.error[:500]}")
+            print(f"[{channel_name}] [claude ERR] {result.error[:500]}")
         else:
             reply = result.text or "(Claude 回了空)"
             if result.session_id and result.session_id != session_id:
                 store.set_session(chat_id, result.session_id)
 
         try:
-            resp = await client.send_text(chat_id, ctx_token, reply)
-            print(f"[send←] resp={resp} ({len(reply)} chars sent)")
+            resp = await channel.send_text(chat_id, ctx_token, reply)
+            print(f"[{channel_name}] [send←] resp={resp} ({len(reply)} chars sent)")
         except Exception as e:
-            print(f"[send EXC] {e!r}")
+            print(f"[{channel_name}] [send EXC] {e!r}")
+
+
+async def channel_loop(
+    channel: AbstractChannel,
+    store: SessionStore,
+    locks: dict[str, asyncio.Lock],
+) -> None:
+    """单个 channel 的消息接收循环。"""
+    try:
+        async for msg in channel.recv_messages():
+            asyncio.create_task(handle_message(msg, channel, store, locks))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[{channel.name}] channel loop error: {e!r}")
+    finally:
+        await channel.close()
 
 
 async def main() -> None:
-    client = ILinkClient()
-    await login(client, TOKEN_PATH)
+    channels = _build_channels()
+    if not channels:
+        print("[bridge] no channels enabled, exiting")
+        return
 
     store = SessionStore(SESSIONS_PATH)
     locks: dict[str, asyncio.Lock] = {}
-    cursor = _load_cursor()
-    print(f"[bridge] start, cursor={cursor!r}, ws_root={DEFAULT_WS_ROOT}")
 
-    while True:
+    print(f"[bridge] start, channels={[ch.name for ch in channels]}, ws_root={DEFAULT_WS_ROOT}")
+
+    # 登录所有 channel
+    for ch in channels:
         try:
-            data = await client.getupdates(cursor)
+            await ch.login()
         except Exception as e:
-            print(f"[poll] error: {e!r}; retry in 2s")
-            await asyncio.sleep(2)
-            continue
+            print(f"[{ch.name}] login failed: {e!r}, removing channel")
+            await ch.close()
+            channels.remove(ch)
 
-        if "errcode" in data or "errmsg" in data:
-            print(f"[poll] server error: {data}; retry in 2s")
-            await asyncio.sleep(2)
-            continue
+    if not channels:
+        print("[bridge] no channels available after login, exiting")
+        return
 
-        new_cursor = data.get("get_updates_buf")
-        if new_cursor and new_cursor != cursor:
-            cursor = new_cursor
-            _save_cursor(cursor)
-
-        for msg in data.get("msgs") or []:
-            sender, ctx_token = extract_meta(msg)
-            text = extract_text(msg)
-            if not (sender and ctx_token and text):
-                print(f"[msg] skipped: {json.dumps(msg, ensure_ascii=False)[:400]}")
-                continue
-            print(f"[msg] {sender}: {text[:120]}")
-            # dispatch without blocking the poll loop; per-chat lock serializes
-            asyncio.create_task(
-                handle_message(sender, ctx_token, text, client, store, locks)
-            )
+    # 并行运行所有 channel 的消息循环
+    tasks = [asyncio.create_task(channel_loop(ch, store, locks)) for ch in channels]
+    await asyncio.gather(*tasks)
 
 
 def run() -> None:
