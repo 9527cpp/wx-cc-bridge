@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
+import platform
+import subprocess
+import time as time_module
 from pathlib import Path
+
+import httpx
 
 from . import claude_runner, commands
 from .channels import AbstractChannel, ILinkChannel, WeComChannel
 from .channels.wecom import WeComConfig
 from .session_store import SessionStore
+from . import wechat_onboard, wecom_onboard
 
 TYPING_HEARTBEAT_SEC = 3.0
 SOFT_NOTICE_SEC = 90.0
@@ -25,6 +32,172 @@ SESSIONS_PATH = STATE_DIR / "sessions.json"
 DEFAULT_WS_ROOT = Path(
     os.environ.get("WX_CC_WS_ROOT", Path.home() / "cc-wx-sessions")
 )
+
+TOKEN_PATH = STATE_DIR / "token.json"
+WECOM_CONFIG_PATH = STATE_DIR / "wecom_config.json"
+
+
+def _restart_service() -> None:
+    """扫码成功后自动重启后台服务。"""
+    print("[onboard] 扫码成功，正在自动执行: make restart-service")
+    try:
+        subprocess.run(["make", "restart-service"], check=True)
+        print("[onboard] 后台服务重启完成")
+    except Exception as e:
+        print(f"[onboard] 自动重启服务失败: {e}")
+        print("[onboard] 请手动执行: make restart-service")
+
+
+def _render_side_by_side(left_lines: list[str], right_lines: list[str], left_label: str, right_label: str) -> None:
+    """并排渲染两组行，带标签。"""
+    max_len = max(len(line) for line in left_lines + right_lines)
+    sep = "  "
+    header_left = f"┌─ {left_label} ─┐"
+    header_right = f"┌─ {right_label} ─┐"
+    header = f"{header_left}{sep}{header_right}"
+    print(f"\n{'':─<{len(header)}}")
+    print(header)
+    print(f"{'':─<{len(header)}}")
+    for l, r in zip(left_lines, right_lines):
+        print(f"{l:<{max_len}}{sep}{r}")
+    print(f"{'':─<{len(header)}}")
+    print("")
+
+
+async def _wecom_fetch_qr() -> tuple[str, str]:
+    """获取企微二维码，返回 (scode, auth_url)。"""
+    plat_map = {"darwin": 1, "windows": 2, "linux": 3}
+    plat = plat_map.get(platform.system().lower(), 0)
+    url = f"https://work.weixin.qq.com/ai/qc/generate?source=wecom-cli&plat={plat}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        resp = r.json()
+        data = resp.get("data") or {}
+        scode = str(data.get("scode") or "").strip()
+        auth_url = str(data.get("auth_url") or "").strip()
+        if not scode or not auth_url:
+            raise RuntimeError(f"获取企微二维码失败: {resp}")
+        return scode, auth_url
+
+
+async def run_onboarding() -> bool:
+    """并排显示两个二维码，任一扫码成功后退出。"""
+    # 按用户期望：无论当前是否已有 token/config，都展示双码供重绑。
+    need_wechat = os.environ.get("WX_CC_ENABLE_ILINK", "1") != "0"
+    need_wecom = os.environ.get("WX_CC_ENABLE_WECOM", "1") != "0"
+
+    print("[onboard] 检测到未配置，开始扫码引导...")
+
+    # 并行获取两个 QR
+    wechat_task = asyncio.create_task(wechat_onboard.fetch_qr_only()) if need_wechat else None
+    wecom_task = asyncio.create_task(_wecom_fetch_qr()) if need_wecom else None
+
+    async def poll_wechat(qrcode_id: str, qrcode_content: str, timeout: float, poll_interval: float) -> bool:
+        base_url = os.environ.get("WX_CC_ILINK_BASE_URL", "https://ilinkai.weixin.qq.com")
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            start = time_module.time()
+            while time_module.time() - start < timeout:
+                r = await client.get(f"{base_url}/ilink/bot/get_qrcode_status", params={"qrcode": qrcode_id})
+                r.raise_for_status()
+                resp = r.json()
+                if str(resp.get("status") or "") == "confirmed":
+                    bot_token = resp.get("bot_token") or ""
+                    base_url_out = resp.get("baseurl") or base_url
+                    if bot_token:
+                        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+                        TOKEN_PATH.write_text(json.dumps({"bot_token": bot_token, "baseurl": base_url_out.rstrip("/")}))
+                        print(f"[onboard] 个人微信扫码成功，已保存到 {TOKEN_PATH}")
+                        return True
+                await asyncio.sleep(poll_interval)
+        return False
+
+    async def poll_wecom(scode: str, timeout: float, poll_interval: float) -> bool:
+        query_url = "https://work.weixin.qq.com/ai/qc/query_result"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            start = time_module.time()
+            while time_module.time() - start < timeout:
+                r = await client.get(query_url, params={"scode": scode})
+                r.raise_for_status()
+                resp = r.json()
+                data = resp.get("data") or {}
+                if str(data.get("status") or "") == "success":
+                    bot_info = data.get("bot_info") or {}
+                    bot_id = str(bot_info.get("botid") or "").strip()
+                    secret = str(bot_info.get("secret") or "").strip()
+                    if bot_id and secret:
+                        WECOM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                        cfg = WeComConfig(bot_id=bot_id, secret=secret)
+                        cfg.save(WECOM_CONFIG_PATH)
+                        print(f"[onboard] 企业微信扫码成功，已保存到 {WECOM_CONFIG_PATH}")
+                        return True
+                await asyncio.sleep(poll_interval)
+        return False
+
+    timeout = 300.0
+    poll_interval = 2.0
+
+    while True:
+        # 获取 QR
+        if wecom_task and not wecom_task.done():
+            await wecom_task
+        if wechat_task and not wechat_task.done():
+            await wechat_task
+
+        wechat_lines: list[str] = []
+        wecom_lines: list[str] = []
+        wechat_id, wechat_content = "", ""
+        wecom_scode, wecom_auth_url = "", ""
+
+        if need_wechat and wechat_task:
+            try:
+                wechat_id, wechat_content = wechat_task.result()
+                wechat_lines = wechat_onboard.render_qr_to_lines(wechat_content)
+            except Exception as e:
+                print(f"[onboard] 获取个人微信二维码失败: {e}")
+                need_wechat = False
+
+        if need_wecom and wecom_task:
+            try:
+                wecom_scode, wecom_auth_url = wecom_task.result()
+                wecom_lines = wecom_onboard._render_qr_to_lines(wecom_auth_url)
+            except Exception as e:
+                print(f"[onboard] 获取企业微信二维码失败: {e}")
+                need_wecom = False
+
+        if not wechat_lines and not wecom_lines:
+            print("[onboard] 两个二维码都获取失败，退出")
+            return False
+
+        _render_side_by_side(wechat_lines, wecom_lines, "个人微信", "企业微信")
+        if need_wechat:
+            print(f"[onboard] 个人微信替代链接: {wechat_content}")
+        if need_wecom:
+            print(f"[onboard] 企业微信替代链接: https://work.weixin.qq.com/ai/qc/gen?source=wecom-cli&scode={wecom_scode}")
+
+        # 创建轮询任务
+        poll_wechat_task = asyncio.create_task(poll_wechat(wechat_id, wechat_content, timeout, poll_interval)) if need_wechat and wechat_id else None
+        poll_wecom_task = asyncio.create_task(poll_wecom(wecom_scode, timeout, poll_interval)) if need_wecom and wecom_scode else None
+
+        done, pending = await asyncio.wait(
+            [t for t in [poll_wechat_task, poll_wecom_task] if t],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for t in pending:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+        for t in done:
+            if t.result():
+                _restart_service()
+                return True
+
+        # 两个都超时了，重新获取二维码
+        print("[onboard] 扫码超时，重新获取二维码...")
+        wechat_task = asyncio.create_task(wechat_onboard.fetch_qr_only()) if need_wechat else None
+        wecom_task = asyncio.create_task(_wecom_fetch_qr()) if need_wecom else None
 
 
 def default_cwd_for(chat_id: str) -> str:
@@ -196,7 +369,16 @@ async def channel_loop(
         await channel.close()
 
 
-async def main() -> None:
+async def main(onboard_only: bool = False) -> None:
+    # onboard_only=True: 只显示二维码，扫码成功后重启 service 并退出
+    # onboard_only=False: 正常启动 bridge（service 后台运行走这里）
+    if onboard_only:
+        ok = await run_onboarding()
+        if ok:
+            return  # _restart_service() 已经 sys.exit 了
+        print("[bridge] onboard 超时退出")
+        return
+
     channels = _build_channels()
     if not channels:
         print("[bridge] no channels enabled, exiting")
@@ -226,8 +408,12 @@ async def main() -> None:
 
 
 def run() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--onboard", action="store_true")
+    args = parser.parse_args()
     try:
-        asyncio.run(main())
+        asyncio.run(main(onboard_only=args.onboard))
     except KeyboardInterrupt:
         print("\n[exit]")
 

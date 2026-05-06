@@ -43,7 +43,16 @@ make sync                    # uv-based deps + editable install
 make run
 ```
 
-A QR code prints in the terminal. Scan it with the WeChat account you want to use as the bot (that account will act as the bridge endpoint). Login persists in `~/.wx-cc-bridge/token.json`.
+`make run` 会进入扫码引导：并排展示个人微信和企业微信二维码（无论当前是否已有配置）。
+任一渠道扫码成功后会保存对应配置并退出前台，然后按提示执行 `make restart-service`。
+
+首次接入/补齐配置请用：
+
+```bash
+make onboard
+```
+
+扫码登录信息会持久化到 `~/.wx-cc-bridge/token.json`（iLink）和 `~/.wx-cc-bridge/wecom_config.json`（WeCom）。
 
 Send any message from a second WeChat account to the bot account and you should see `[msg] …` in the log and a Claude reply back in WeChat.
 
@@ -87,10 +96,10 @@ Logs: `~/Library/Logs/wx-cc-bridge/`. Auto-restarts on crash; survives logout/lo
 ### Linux (systemd)
 
 ```bash
-# 一行命令完成安装（需要 sudo）
-sudo make install-service
+# 一行命令完成安装（不需要 sudo）
+make install-service
 
-# 后续管理不需要 sudo（polkit 已授权当前用户）
+# 后续管理不需要 sudo
 make status
 make logs
 make restart-service
@@ -99,13 +108,15 @@ make uninstall-service
 
 安装时 Makefile 会自动：
 1. 创建 `~/.local/log/wx-cc-bridge/` 日志目录
-2. 生成 `/etc/systemd/system/wx-cc-bridge.service`
-3. 设置 `User=rock5b`（与服务配置目录一致）
-4. 启用并启动服务
+2. 生成 `~/.config/systemd/user/wx-cc-bridge.service`
+3. 执行 `systemctl --user daemon-reload`
+4. 启用并启动用户态服务
 
 Logs: `~/.local/log/wx-cc-bridge/bridge.log` + `bridge.err.log`.
 
-> **常见问题**：`ModuleNotFoundError: No module named 'httpx'` — systemd 默认以 root 运行，但 pip 安装的包在用户目录。需要 `sudo pip3 install httpx qrcode` 安装到系统路径，或者 service 文件中指定 `User=yourname` 以你的用户身份运行。
+> **提示**：如果你希望退出登录后服务仍持续运行（而不是仅在登录会话内运行），请执行一次：
+>
+> `sudo loginctl enable-linger <你的用户名>`
 
 ## Commands (in WeChat)
 

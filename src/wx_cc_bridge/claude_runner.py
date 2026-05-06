@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
-CLAUDE_BIN = "claude"
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 
 
 @dataclass

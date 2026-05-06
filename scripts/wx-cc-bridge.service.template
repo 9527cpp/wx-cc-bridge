@@ -8,7 +8,8 @@ WorkingDirectory={{REPO}}
 ExecStart={{PYTHON}} -m wx_cc_bridge.bridge
 Environment=PYTHONPATH={{REPO}}/src
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/home/rock5b/.nvm/versions/node/v18.20.8/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+Environment=CLAUDE_BIN={{CLAUDE_BIN}}
+Environment=PATH={{NODE_BIN_PREFIX}}{{HOME}}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Restart=always
 RestartSec=5
 
@@ -16,4 +17,4 @@ StandardOutput=append:{{LOG_DIR}}/bridge.log
 StandardError=append:{{LOG_DIR}}/bridge.err.log
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
