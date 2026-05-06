@@ -3,7 +3,7 @@
 收到消息 → /命令走 commands.handle → 否则 subprocess claude -p，带 session_id。
 每个 chat_id 串行化；不同 chat 并发。
 
-支持多 channel：iLink（个人微信）、WeCom Bot（企业微信）。
+支持多 channel：iLink（个人微信）、WeCom Bot（企业微信）、Feishu Bot（飞书）。
 """
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from pathlib import Path
 import httpx
 
 from . import claude_runner, commands, opencode_runner
-from .channels import AbstractChannel, ILinkChannel, WeComChannel
+from .channels import AbstractChannel, FeishuChannel, ILinkChannel, WeComChannel
+from .channels.feishu import FeishuConfig
 from .channels.wecom import WeComConfig
 from .session_store import SessionStore
 from . import wechat_onboard, wecom_onboard
@@ -229,6 +230,18 @@ def _build_channels() -> list[AbstractChannel]:
         wecom_secret = os.environ.get("WX_CC_WECOM_SECRET", "")
         if wecom_bot_id and wecom_secret and channels and not isinstance(channels[-1], WeComChannel):
             channels.append(WeComChannel(config=WeComConfig(bot_id=wecom_bot_id, secret=wecom_secret)))
+
+    # Feishu Bot channel：检测 feishu_config.json 是否存在
+    if os.environ.get("WX_CC_ENABLE_FEISHU", "1") != "0":
+        feishu_config_path = STATE_DIR / "feishu_config.json"
+        if feishu_config_path.exists():
+            channels.append(FeishuChannel(config_path=feishu_config_path))
+        else:
+            print(f"[bridge] Feishu config not found ({feishu_config_path}), skipping Feishu channel")
+        feishu_app_id = os.environ.get("WX_CC_FEISHU_APP_ID", "")
+        feishu_secret = os.environ.get("WX_CC_FEISHU_APP_SECRET", "")
+        if feishu_app_id and feishu_secret and channels and not isinstance(channels[-1], FeishuChannel):
+            channels.append(FeishuChannel(config=FeishuConfig(app_id=feishu_app_id, app_secret=feishu_secret)))
 
     return channels
 

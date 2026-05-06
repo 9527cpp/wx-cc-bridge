@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from .base import AbstractChannel, Message
+from .feishu import FeishuChannel
 from .ilink import ILinkChannel
 from .wecom import WeComChannel
 
-__all__ = ["AbstractChannel", "Message", "ILinkChannel", "WeComChannel"]
+__all__ = ["AbstractChannel", "Message", "FeishuChannel", "ILinkChannel", "WeComChannel"]
