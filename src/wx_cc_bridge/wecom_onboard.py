@@ -50,11 +50,27 @@ def _render_qr_terminal(url: str) -> None:
     qr.add_data(url)
     qr.make(fit=True)
     matrix = qr.get_matrix()
-    black = "██"
-    white = "  "
+
+    # 用半高字符压缩终端二维码高度：
+    # 两行像素合并为一行字符（▀/▄/█/空格），在保持可扫性的同时减少占屏。
+    def row_pair_to_text(top: list[bool], bottom: list[bool]) -> str:
+        chars: list[str] = []
+        for t, b in zip(top, bottom):
+            if t and b:
+                chars.append("█")
+            elif t and not b:
+                chars.append("▀")
+            elif (not t) and b:
+                chars.append("▄")
+            else:
+                chars.append(" ")
+        return "".join(chars)
+
     print("")
-    for row in matrix:
-        print("".join(black if cell else white for cell in row))
+    if len(matrix) % 2 == 1:
+        matrix = [*matrix, [False] * len(matrix[0])]
+    for i in range(0, len(matrix), 2):
+        print(row_pair_to_text(matrix[i], matrix[i + 1]))
     print("")
 
 
