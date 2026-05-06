@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import claude_runner, commands
+from . import claude_runner, commands, opencode_runner
 from .channels import AbstractChannel, ILinkChannel, WeComChannel
 from .channels.wecom import WeComConfig
 from .session_store import SessionStore
@@ -309,8 +309,9 @@ async def handle_message(
         state = store.get(chat_id)
         cwd = Path(state.get("cwd") or default_cwd_for(chat_id))
         session_id = state.get("session_id")
+        engine = store.get_engine(chat_id)
 
-        print(f"[{channel_name}] [claude→] {chat_id} cwd={cwd} sid={session_id}")
+        print(f"[{channel_name}] [{engine}→] {chat_id} cwd={cwd} sid={session_id}")
         t0 = asyncio.get_event_loop().time()
 
         async def _soft_notice() -> None:
@@ -325,21 +326,25 @@ async def handle_message(
         notice_task = asyncio.create_task(_soft_notice())
         try:
             async with typing_indicator(channel, chat_id, max_duration=SOFT_NOTICE_SEC):
-                result = await claude_runner.ask(text, cwd=cwd, session_id=session_id)
+                if engine == "opencode":
+                    result = await opencode_runner.ask(text, cwd=cwd, session_id=session_id)
+                else:
+                    result = await claude_runner.ask(text, cwd=cwd, session_id=session_id)
         finally:
             notice_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await notice_task
         dt = asyncio.get_event_loop().time() - t0
         print(
-            f"[{channel_name}] [claude←] {dt:.1f}s "
+            f"[{channel_name}] [{engine}←] {dt:.1f}s "
             f"sid={result.session_id} err={bool(result.error)} "
             f"text_len={len(result.text)}"
         )
 
         if result.error:
-            reply = f"[Claude 出错] {result.error[:800]}"
-            print(f"[{channel_name}] [claude ERR] {result.error[:500]}")
+            label = "OpenCode" if engine == "opencode" else "Claude"
+            reply = f"[{label} 出错] {result.error[:800]}"
+            print(f"[{channel_name}] [{engine} ERR] {result.error[:500]}")
         else:
             reply = result.text or "(Claude 回了空)"
             if result.session_id and result.session_id != session_id:

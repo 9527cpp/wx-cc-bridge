@@ -15,6 +15,8 @@ from .session_store import SessionStore
 HELP = (
     "/new         新对话（忘掉当前 session）\n"
     "/clear       同 /new\n"
+    "/claude      切到 Claude 引擎\n"
+    "/opencode    切到 OpenCode 引擎\n"
     "/pwd         当前工作目录\n"
     "/cd <path>   切目录（持久化，开新对话）\n"
     "/history     最近 5 轮历史对话\n"
@@ -102,6 +104,16 @@ async def handle(
     if cmd in ("/new", "/clear"):
         store.clear_session(chat_id)
         return "✓ 已开启新对话"
+
+    if cmd == "/claude":
+        store.set_engine(chat_id, "claude")
+        store.clear_session(chat_id)
+        return "✓ 已切换到 Claude 引擎（已重置会话）"
+
+    if cmd == "/opencode":
+        store.set_engine(chat_id, "opencode")
+        store.clear_session(chat_id)
+        return "✓ 已切换到 OpenCode 引擎（已重置会话）"
 
     if cmd == "/pwd":
         return cwd

@@ -1,10 +1,11 @@
-"""Per-chat state persistence: session_id, cwd.
+"""Per-chat state persistence: session_id, cwd, engine.
 
 Shape of sessions.json:
 {
   "<chat_id>": {
     "session_id": "abc-123",
     "cwd": "/Users/andy/cc-wx-sessions/xxx",
+    "engine": "claude",
     "updated_at": "2026-04-24T12:00:00"
   }
 }
@@ -51,4 +52,16 @@ class SessionStore:
 
     def set_cwd(self, chat_id: str, cwd: str) -> None:
         self._touch(chat_id)["cwd"] = cwd
+        self._save()
+
+    def get_engine(self, chat_id: str) -> str:
+        rec = self._data.get(chat_id, {})
+        eng = str(rec.get("engine") or "claude").strip().lower()
+        return eng if eng in {"claude", "opencode"} else "claude"
+
+    def set_engine(self, chat_id: str, engine: str) -> None:
+        eng = engine.strip().lower()
+        if eng not in {"claude", "opencode"}:
+            raise ValueError(f"unsupported engine: {engine}")
+        self._touch(chat_id)["engine"] = eng
         self._save()
